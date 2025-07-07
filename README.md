@@ -1,0 +1,349 @@
+# scrcpy-mcp
+
+MCP server that gives AI agents full vision and control over Android devices via ADB and scrcpy.
+
+Connect any MCP-compatible AI assistant (Claude Code, OpenCode, Cursor, VS Code Copilot, etc.) to your Android device. The AI can see the screen, tap, swipe, type, launch apps, inspect UI elements, transfer files, and run shell commands.
+
+[![MCP Badge](https://lobehub.com/badge/mcp/juancf-scrcpy-mcp)](https://lobehub.com/mcp/juancf-scrcpy-mcp)
+
+## Features
+
+- **44 tools** covering screenshots, input, apps, UI automation, shell, files, clipboard, video streaming, and audio streaming/recording
+- **scrcpy-first**: uses scrcpy's binary control protocol for 10-50x faster input and near-instant screenshots (~33ms)
+- **ADB fallback**: interaction tools work without scrcpy — slower but always available (the audio tools `start_audio_stream`/`audio_record_start` and the video stream require scrcpy)
+- **Image-returning screenshots**: the AI actually sees the screen, not just a file path
+- **UI element finding**: `ui_find_element` returns tap coordinates so the AI can act on what it sees
+- **Audio streaming & recording**: stream device audio to host speakers (`start_audio_stream`) or capture to `.wav`/`.opus` (`audio_record_start`)
+- **Clipboard that works on Android 10+**: scrcpy bypasses the restrictions that break ADB-only solutions
+
+## Prerequisites
+
+### Required
+
+| Requirement | Install | Verify |
+|-------------|---------|--------|
+| **Node.js 24+** | [nodejs.org](https://nodejs.org) or `nvm install` (uses [`.nvmrc`](.nvmrc)) | `node --version` |
+| **ADB** (Android Platform Tools) | [developer.android.com/tools/releases/platform-tools](https://developer.android.com/tools/releases/platform-tools) | `adb version` |
+| **Android device** with USB debugging (Android 11+ for audio) | Settings → Developer Options → USB Debugging | `adb devices` |
+
+### Optional (for enhanced performance)
+
+| Requirement | Install | Benefit |
+|-------------|---------|---------|
+| **scrcpy** | [github.com/Genymobile/scrcpy](https://github.com/Genymobile/scrcpy/releases) | 10-50x faster input, ~33ms screenshots |
+| **ffmpeg** | `apt install ffmpeg` / `brew install ffmpeg` | Required for scrcpy video stream decoding, audio recording, and audio clip capture |
+| **ffplay** | Usually packaged with ffmpeg | Required for audio playback and the MJPEG viewer window |
+
+### Device setup
+
+1. Enable Developer Options: **Settings → About Phone → tap "Build Number" 7 times**
+2. Enable USB Debugging: **Settings → Developer Options → USB Debugging**
+3. Connect device via USB
+4. Accept the RSA fingerprint prompt on the device
+5. Verify: `adb devices` should show your device as `device` (not `unauthorized`)
+
+## Installation
+
+```bash
+# Run directly with npx (no install needed)
+npx scrcpy-mcp
+
+# Or install globally
+npm install -g scrcpy-mcp
+```
+
+## MCP Client Configuration
+
+### Claude Code
+
+```bash
+claude mcp add android -- npx scrcpy-mcp
+```
+
+Or add to `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "android": {
+      "command": "npx",
+      "args": ["scrcpy-mcp"]
+    }
+  }
+}
+```
+
+### OpenCode
+
+Add to `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "android": {
+      "command": "npx",
+      "args": ["scrcpy-mcp"]
+    }
+  }
+}
+```
+
+### Cursor
+
+Settings → MCP → Add Server:
+
+```json
+{
+  "android": {
+    "command": "npx",
+    "args": ["scrcpy-mcp"]
+  }
+}
+```
+
+### Claude Desktop
+
+Edit `~/.config/Claude/claude_desktop_config.json` (Linux) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+
+```json
+{
+  "mcpServers": {
+    "android": {
+      "command": "npx",
+      "args": ["scrcpy-mcp"]
+    }
+  }
+}
+```
+
+### VS Code (GitHub Copilot)
+
+Add to `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "android": {
+      "command": "npx",
+      "args": ["scrcpy-mcp"]
+    }
+  }
+}
+```
+
+### Customizing Environment Variables
+
+If you need to configure custom options (such as pointing to a non-standard `scrcpy-server` path), you can add the `"env"` object to your server configuration. For example:
+
+```json
+{
+  "mcpServers": {
+    "android": {
+      "command": "npx",
+      "args": ["scrcpy-mcp"],
+      "env": {
+        "SCRCPY_SERVER_PATH": "C:\\path\\to\\scrcpy-server"
+      }
+    }
+  }
+}
+```
+
+*Note: only set `SCRCPY_SERVER_VERSION` if version auto-detection fails — it overrides detection, so a stale value causes the version mismatch described in [Troubleshooting](#troubleshooting). Match it to your installed scrcpy (`scrcpy --version`).*
+
+*Note: On Windows, remember to double-escape backslashes (`\\`) in your configuration paths.*
+
+> **OpenCode users:** OpenCode uses `"environment"` instead of `"env"` for passing environment variables to MCP servers. Replace `"env"` with `"environment"` in the example above if you're configuring scrcpy-mcp in `opencode.json`.
+
+## Tool Reference
+
+### Session Management
+
+| Tool | Description |
+|------|-------------|
+| `start_session` | Start a scrcpy session. When active, input and screenshots use the fast path (10-50x faster). |
+| `stop_session` | Stop the scrcpy session. Tools fall back to ADB. |
+| `version` | Report which scrcpy-server version the session pushes and where that version was resolved from. |
+
+`start_session` options:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `maxSize` | `1024` | Max video frame dimension in pixels |
+| `maxFps` | `30` | Max frames per second |
+| `audio` | `false` | Capture audio (see the heads-up below) |
+| `audioSource` | `output` | Audio source (`output`, `playback`, `mic`, `voice-call`, …) |
+| `audioDup` | `false` | Keep device playback audible with `audioSource: "playback"` (Android 13+) |
+| `stayAwake` | `false` | Keep the device on for the whole session (scrcpy `--stay-awake`). Applies **only while the device is plugged in**. |
+| `screenOffTimeout` | (device setting) | Screen-off timeout **in seconds** for the whole session (scrcpy `--screen-off-timeout`). Works on battery too. Needs scrcpy 2.5+. |
+
+Both screen-awake options are temporary: scrcpy restores the device's original
+values when the session ends, including when a tool restarts the session to
+turn audio on.
+
+### Video Streaming
+
+| Tool | Description |
+|------|-------------|
+| `start_video_stream` | Start an HTTP MJPEG video stream and open a viewer window (ffplay). Auto-starts a scrcpy session if needed. |
+| `stop_video_stream` | Stop the video stream and close the viewer window. |
+
+### Audio Streaming & Recording
+
+> **Heads up:** Audio capture is **opt-in** and requires **Android 11+**. The default source `output` uses `REMOTE_SUBMIX`, which **mutes the device's own speakers** while capturing — the audio is moved to the host, not copied. Use `audioSource: "playback"` with `audioDup: true` (Android 13+) to keep the device audible. Recordings are saved on the **host** filesystem.
+
+| Tool | Description |
+|------|-------------|
+| `start_audio_stream` | Stream device audio to the host's speakers via ffplay. Restarts the scrcpy session if it was started without audio. |
+| `stop_audio_stream` | Stop streaming audio to the host. |
+| `audio_record_start` | Start recording device audio to `.wav` (default) or `.opus` on the host. Restarts the scrcpy session if needed. Stops automatically after `maxDuration` seconds (default 300). |
+| `audio_record_stop` | Stop the recording and finalise the host-side file. |
+| `audio_capture` | Capture a bounded clip of device audio and return it as an audio content block. Restarts the scrcpy session if needed. `durationSeconds` defaults to 5 (integer, max 30; a 5s default becomes 2.5s when ffmpeg has no libopus and the WAV fallback is used). `audioSource`/`audioDup` default to the running audio session's settings, so a clip can be taken during a recording or stream without interrupting it. |
+
+### Device Management
+
+
+| Tool | Description |
+|------|-------------|
+| `device_list` | List all connected devices with serial, state, and model |
+| `device_info` | Get model, Android version, screen size, SDK level, battery |
+| `screen_on` | Wake the device screen |
+| `screen_off` | Turn the screen off |
+| `rotate_device` | Rotate the screen (requires active session) |
+| `expand_notifications` | Pull down the notification panel (requires active session) |
+| `expand_settings` | Pull down the quick settings panel (requires active session) |
+| `collapse_panels` | Collapse notification/settings panels (requires active session) |
+| `connect_wifi` | Enable WiFi ADB and connect to the device wirelessly. Returns the connection address. |
+| `disconnect_wifi` | Disconnect from a wireless ADB device |
+
+### Vision
+
+| Tool | Description |
+|------|-------------|
+| `screenshot` | Capture the screen and return it as an image. ~33ms with scrcpy, ~500ms via ADB. |
+| `screen_record_start` | Start recording the screen to a file on the device |
+| `screen_record_stop` | Stop recording and optionally pull the file to the host |
+
+### Input Control
+
+All input tools use scrcpy (~5-10ms) when a session is active, otherwise fall back to ADB (~100-300ms).
+
+| Tool | Description |
+|------|-------------|
+| `tap` | Tap at screen coordinates |
+| `swipe` | Swipe from one point to another |
+| `long_press` | Long press at coordinates |
+| `drag_drop` | Drag from one point to another |
+| `input_text` | Type a text string into the focused field |
+| `key_event` | Send a key event: HOME, BACK, ENTER, VOLUME_UP, VOLUME_DOWN, POWER, etc. |
+| `scroll` | Scroll at a position (dx=horizontal, dy=vertical) |
+
+### App Management
+
+| Tool | Description |
+|------|-------------|
+| `app_start` | Launch an app by package name. Prefix with `+` to force-stop before launch. |
+| `app_stop` | Force-stop an app |
+| `app_install` | Install an APK from the host machine |
+| `app_uninstall` | Uninstall an app |
+| `app_list` | List installed packages, optionally filter by name or system/third-party |
+| `app_current` | Get the current foreground app and activity |
+
+### UI Automation
+
+| Tool | Description |
+|------|-------------|
+| `ui_dump` | Dump the full UI hierarchy as XML |
+| `ui_find_element` | Find elements by text, resource ID, class name, or content description. Returns tap coordinates. |
+
+### Shell & Files
+
+| Tool | Description |
+|------|-------------|
+| `shell_exec` | Execute an arbitrary ADB shell command and return the output |
+| `file_push` | Push a file from the host machine to the device |
+| `file_pull` | Pull a file from the device to the host machine |
+| `file_list` | List directory contents on the device |
+
+### Clipboard
+
+| Tool | Description |
+|------|-------------|
+| `clipboard_get` | Get clipboard content. Uses scrcpy to bypass Android 10+ restrictions. |
+| `clipboard_set` | Set clipboard content. Pass `paste: true` to also paste immediately. |
+
+## Performance
+
+| Operation | scrcpy (session active) | ADB fallback |
+|-----------|------------------------|--------------|
+| Screenshot | ~33ms | ~500ms |
+| Tap / Swipe | ~5-10ms | ~100-300ms |
+| Text input | ~5ms | ~100-300ms |
+| Clipboard | ~10ms | unreliable on Android 10+ |
+
+Start a session once at the beginning to unlock the fast path:
+
+```
+start_session → take screenshots → tap → swipe → ...
+```
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ADB_PATH` | `adb` | Path to the ADB binary |
+| `ANDROID_SERIAL` | (none) | Default device serial, overrides auto-detection |
+| `SCRCPY_SERVER_PATH` | (auto) | Path to the scrcpy-server binary |
+| `SCRCPY_SERVER_VERSION` | (auto) | Version of the scrcpy-server binary |
+| `FFMPEG_PATH` | `ffmpeg` | Path to the ffmpeg binary |
+| `FFPLAY_PATH` | `ffplay` | Path to the ffplay binary (video stream viewer and audio playback) |
+
+When only one device is connected, tools auto-detect it. With multiple devices, pass the `serial` parameter explicitly or set `ANDROID_SERIAL`.
+
+## Troubleshooting
+
+**`adb devices` shows `unauthorized`**
+Accept the RSA fingerprint prompt on the device. If the prompt doesn't appear, revoke USB debugging authorizations in Developer Options and reconnect.
+
+**`start_session` fails**
+Make sure scrcpy is installed and the `scrcpy-server` binary is accessible. On Windows, add the folder containing both `scrcpy.exe` and `scrcpy-server` to your PATH, or set `SCRCPY_SERVER_PATH` to the full path of the `scrcpy-server` file.
+* **File vs Directory**: Ensure `SCRCPY_SERVER_PATH` points directly to the `scrcpy-server` **file** itself (e.g. `C:\path\to\scrcpy-server`), NOT to its parent folder.
+* **Android Directory Conflict**: If you previously pushed a directory to the server path, `/data/local/tmp/scrcpy-server.jar` on the Android device might have been created as a folder. Run `adb shell rm -rf /data/local/tmp/scrcpy-server.jar` to delete it.
+* **Version Mismatch**: The client must send the exact version of the `scrcpy-server` file it pushes. To guarantee that, the server and the version are never resolved separately — one scrcpy install is resolved as a pair, and the version comes from the client belonging to that same install. The install is found in this order: `SCRCPY_SERVER_PATH` if set (its client is then located beside the server, or one prefix step away at `../../bin/scrcpy`); otherwise the `scrcpy` on your PATH, whose server is located beside it or at `../share/scrcpy/scrcpy-server`; otherwise whatever your package manager reports (`dpkg`, `pacman`, `rpm`, `apk`, `brew`). A symlinked client is resolved to its real directory before its counterpart is derived, so a link farm such as Homebrew's `bin/scrcpy` pairs with the install it points at rather than with the link's own directory. `SCRCPY_SERVER_VERSION` overrides the detected version if set. So on Windows, or when a GUI app launches the MCP without your shell PATH, pointing `SCRCPY_SERVER_PATH` at a server inside a complete scrcpy install is enough on its own, and it wins even if a different scrcpy comes first on your PATH — note that reading the version **runs that install's executable**, so point `SCRCPY_SERVER_PATH` only at an install you trust (the same trust the server file itself already requires, since it gets pushed to your device and executed there). If no client can be found for the resolved server (for example a lone `scrcpy-server` downloaded from the releases page), the client falls back to the default version and the server may exit with a version-mismatch error; set `SCRCPY_SERVER_VERSION` to your installed version (e.g., `"4.1"`). Run the `version` tool to see which version is in use and where it was resolved from. See the Environment Variables table above.
+
+**Screenshots are slow (~500ms)**
+Start a scrcpy session with `start_session` to enable the fast video stream path. Requires scrcpy and ffmpeg.
+
+**`expand_notifications` / `expand_settings` / `collapse_panels` fail**
+These tools require an active scrcpy session. Run `start_session` first.
+
+**The device screen keeps turning off during long automations**
+Start the session with `stayAwake: true` (plugged in only) or `screenOffTimeout: <seconds>`, which also works on battery. Both are restored when the session ends.
+
+**`start_audio_stream` says ffplay was not found**
+Install ffmpeg (ffplay ships with it), or set `FFPLAY_PATH` to the binary. The same applies to `audio_record_start` and `FFMPEG_PATH`.
+
+**Audio recording is silent**
+`REMOTE_SUBMIX` only captures what apps are actually playing — a recording made while nothing plays is digital silence, which is expected. Also check the device is not muted, and remember the default `output` source moves the audio to the host, so the device goes quiet while capturing. Use `audioSource: "playback"` with `audioDup: true` (Android 13+) to keep it audible.
+
+**Audio tools report audio as unavailable**
+Audio capture needs Android 11+ (SDK 30). On older devices the session still works for video, input, and clipboard.
+
+**Clipboard doesn't work on Android 10+**
+ADB clipboard access is restricted on Android 10+. Start a scrcpy session — the scrcpy clipboard protocol bypasses this restriction.
+
+**Multiple devices connected**
+Pass `serial` to each tool or set the `ANDROID_SERIAL` environment variable.
+
+## Security
+
+This server provides full control over connected Android devices. The `shell_exec` tool can run arbitrary commands, and `file_push`/`file_pull` can read and write any file accessible to the shell user.
+
+- The server runs locally over stdio — it is not exposed to the network
+- ADB requires USB debugging to be explicitly enabled on the device
+- The device must accept your host's RSA key on first connection
+- Only connect devices you own and trust the AI agent you are using
+
+## License
+
+MIT — see [LICENSE](LICENSE)
